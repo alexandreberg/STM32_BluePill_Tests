@@ -1,53 +1,131 @@
-// Sketch para STM32 BluePill - Blink + Deep Sleep - Piscar LED PC13 com mensagens seriais e DeepSleep por 1 minuto
+// Sketch para STM32 BluePill - LoRa Sender
 // PlatformIO - STM32duino
 #include <Arduino.h>
-#include <STM32LowPower.h>  // Biblioteca LowPower
+#include <SPI.h>
+#include <LoRa.h>
 
-const int ledPin = PC13;  // LED na placa BluePill
-unsigned long previousMillis = 0;
-const long interval = 500;  // intervalo de 500ms
-bool ledState = false;
-#define sleep_time 60
+int counter = 0;
+int lora_startup_counter = 0;     // Counter to check if LoRa chip started communication propperly
+long readingID = 0;               // Sending packet N°
+#define sensor_id "Sensor_02"           // <<=== Sensor identification  ==>> CHANGE HERE!!
+#define sensor_location "Bridge_01"     // <<=== Sensor location        ==>> CHANGE HERE!!
+//define the pins used by the LoRa transceiver module
+  #define SCK           PA5
+  #define MISO          PA6
+  #define MOSI          PA7
+  #define SS            PA4
+  #define RST           PA0
+  #define DIO0          PA1
+  const int csPin =     PA4;         // LoRa radio chip select
+  const int resetPin =  PA0;         // LoRa radio reset
+  const int irqPin =    PA1;         // Change for your board; must be a hardware interrupt pin of the STM32 Bluepill
 
-void setup() {
-  // Inicializa o pino do LED como saída
-  pinMode(ledPin, OUTPUT);
-  digitalWrite(ledPin, HIGH);  // LED desligado (lógica invertida)
-  
-  // Inicializa comunicação serial
-  Serial.begin(115200);
-  
-  // Aguarda a inicialização do serial (opcional)
-  delay(1000);
-  
-  Serial.println("");
-  Serial.println("Sistema iniciado  - Blink + DeepSleep - LED na PC13");
-  Serial.println("Piscando a cada " + String(interval) + " ms");
-  Serial.println("========================");
+  // Define LoRa Communication Band:
+  #define BAND 915E6  
+  String LoRaMessage = "";          // String to store the LoRa Message that should be sent
 
-  // Pisca 5 vezes antes de dormir
-  for (int i = 0; i < 5; i++) {
-    digitalWrite(ledPin, LOW);   // LED ON
-    Serial.println("LED ON");
-    delay(200);
-    digitalWrite(ledPin, HIGH);  // LED OFF
-    Serial.println("LED OFF");
-    delay(200);
+  void onTxDone() {
+    #ifdef enableSerialLog
+      Serial.println("TxDone");
+    #endif
+    // LoRa_rxMode();
   }
 
-  // Inicializa a lib LowPower
-  LowPower.begin();
+    boolean runEvery(unsigned long interval)
+  {
+    static unsigned long previousMillis = 0;
+    unsigned long currentMillis = millis();
+    if (currentMillis - previousMillis >= interval)
+    {
+      previousMillis = currentMillis;
+      return true;
+    }
+    return false;
+  }
 
-  // Entra em Shutdown Mode por 60 segundos
-  Serial.println("Entrando em Deep Sleep por " + String(sleep_time) + " s");
-  delay(500);
+  void LoRa_txMode(){
+    LoRa.idle();                          // set standby mode
+    LoRa.disableInvertIQ();               // normal mode
+  }
+    void LoRa_sendMessage(String message) {
+    LoRa_txMode();                        // set tx mode
+    LoRa.beginPacket();                   // start packet
+    LoRa.print(message);                  // add payload
+    LoRa.endPacket(true);                 // finish packet and send it
+  }
 
-  LowPower.shutdown(1000 * sleep_time);
 
-  // Quando acordar, o sistema reinicia do setup()
+ void start_LoRa(){
+    
+    //Setup receiver para receber o update da hora:
+    #ifdef enableSerialLog
+      Serial.println("LoRa Sender test");
+      Serial.println();
+    #endif
+
+    // register the receive callback
+    // LoRa.onReceive(onReceive); 
+    LoRa.onTxDone(onTxDone);
+    // LoRa_rxMode();
+  } //end start_LoRa
+
+  void sendReadings() {
+    if (runEvery(5000)) { // repeat every 5 sec 
+    //TODO se recebe confirmação de recebimento do gateway, não pode enviar mais para economizar bateria ver email: Checagem de Retorno de mensagem LoRa
+
+      //TODO: Do I know it the receiver received the LoRa message? how?
+      LoRaMessage = String(sensor_id) + "/" + String(counter) + "&" + String(counter);
+
+      //Send LoRa packet to receiver
+      LoRa_sendMessage(LoRaMessage); // send a LoRaMessage
+
+      #ifdef enableSerialLog
+        Serial.print("Sending packet N°: ");   Serial.println(readingID);
+        Serial.print("LoRaMessage: ");   Serial.println(LoRaMessage);
+      #endif
+
+      readingID++;
+    }
+  }
+
+void setup() {
+  Serial.begin(115200);
+  while (!Serial);
+
+  Serial.println("LoRa Sender");
+
+  LoRa.setPins(csPin, resetPin, irqPin);    //SPI LoRa pins
+
+    while (!LoRa.begin(BAND) && lora_startup_counter < 10) {
+      Serial.print(".");
+      lora_startup_counter++;
+      delay(500);
+    }
+    if (lora_startup_counter == 10) {
+      Serial.println("LoRa initialization Failed!"); 
+      delay (100);
+    }
+        if (lora_startup_counter < 10) {
+          #ifdef enableSerialLog
+            Serial.println("LoRa initialization OK!"); 
+          #endif
+    }
+
 }
 
 void loop() {
-  // Nunca deve chegar aqui porque após acordar do shutdown,
-  // o sistema reinicia e começa novamente pelo setup().
+  Serial.print("Sending packet: ");
+  Serial.println(counter);
+
+  // send packet
+  LoRaMessage = String(sensor_id) + "/" + String(counter) + "&" + String(counter);
+  LoRa.beginPacket();
+  // LoRa.print("hello ");
+  LoRa.print(LoRaMessage);
+  // LoRa.print(counter);
+  LoRa.endPacket();
+
+  counter++;
+
+  delay(5000);
 }
