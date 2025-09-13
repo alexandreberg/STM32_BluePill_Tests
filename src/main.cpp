@@ -127,7 +127,7 @@ shutdown mode: high wake-up latency (possible hundereds of ms or second timefram
 #endif
 
 /*********************************************** Global Variables ***********************************************/
-String version = "System Version: SAPM_Sensor_BluePill_2025091201"; // ==> CHANGE HERE! <==
+String version = "System Version: SAPM_Sensor_BluePill_2025091301 New PCB Pins"; // ==> CHANGE HERE! <==
 
 #ifdef enableWatchDog
 const int ledPin = PB13; // TODO: Just to have visual information that it is working.
@@ -185,11 +185,11 @@ int goToSleep_flag = 0; // Flag to enter in deep sleep mode
 #define MISO PA6
 #define MOSI PA7
 #define SS PA4
-#define RST PA0
-#define DIO0 PA1
+#define RST PA8 // ==> New PCB
+#define DIO0 PA15 // ==> New PCB
 const int csPin = PA4;    // LoRa radio chip select
-const int resetPin = PA0; // LoRa radio reset
-const int irqPin = PA1;   // Change for your board; must be a hardware interrupt pin of the STM32 Bluepill
+const int resetPin = PA8; // LoRa radio reset
+const int irqPin = PA15;   // Change for your board; must be a hardware interrupt pin of the STM32 Bluepill ==> New PCB
 
 // Define LoRa Communication Band:
 #define BAND 915E6 /*  915E6 for Brazil (902-928 MHz) \
@@ -374,7 +374,7 @@ void sketchSetup()
   Serial.println(String(version));
   Serial.println("");
 
-  Serial.println("=== Boot STM32 Sensor Node ===");
+  Serial.println("=== Boot STM32 Sensor Node with New PCB Pins===");
   Serial.print("Last state before reset/sleep: ");
   Serial.println(getBackupRegister(0));
   Serial.print("BackupReg1 (TS low): ");
