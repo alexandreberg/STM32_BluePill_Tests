@@ -8,12 +8,12 @@
  * RFM95 LoRa Connection - STM32 Bluepill
  *    VCC - 3.3V
  *    GND - GND
- *    SCK - SCK (PA5)
- *    MISO - MISO (PA6)
- *    MOSI - MOSI (PA7)
- *    NSS - (PA4)
+ *    LoRa_SCK - LoRa_SCK (PA5)
+ *    LoRa_MISO - LoRa_MISO (PA6)
+ *    LoRa_MOSI - LoRa_MOSI (PA7)
+ *    LoRa_NSS - (PA4)
  *    RESET - (PA0)
- *    DIO0 - (PA1)
+ *    LoRa_DIO0 - (PA1)
  *
  * BackupRegisters:
  * See https://community.st.com/t5/stm32-mcus/how-to-use-the-stm32-s-backup-registers/ta-p/49892
@@ -127,10 +127,10 @@ shutdown mode: high wake-up latency (possible hundereds of ms or second timefram
 #endif
 
 /*********************************************** Global Variables ***********************************************/
-String version = "System Version: SAPM_Sensor_BluePill_2025091301 New PCB Pins"; // ==> CHANGE HERE! <==
+String version = "System Version: SAPM_Sensor_BluePill_2025091402 New PCB Pins"; // ==> CHANGE HERE! <==
 
 #ifdef enableWatchDog
-const int ledPin = PB13; // TODO: Just to have visual information that it is working.
+const int ledPin = PC13; // TODO: Just to have visual information that it is working.
 #endif
 
 #ifdef enableTinyRTC // Not used
@@ -172,7 +172,7 @@ const unsigned int triggerPin = PA3;
 const unsigned int echoPin = PA2;
 // long lastEchoDistance = 0;             // We want to keep these values after reset
 unsigned long pulseLength = 0;
-unsigned long readingDistance = 10; // Measured distance in centimeters
+unsigned long readingDistance = 0; // Measured distance in centimeters
 // unsigned long maxReadingNumber = 0;    // Number of ultrasonic readings to do the calculation of mean and average
 bool distance_reading_done = false;
 #endif // enableUltrasonic
@@ -181,15 +181,18 @@ int goToSleep_flag = 0; // Flag to enter in deep sleep mode
 
 #ifdef enableLoRa
                         // define the pins used by the LoRa transceiver module
-#define SCK PA5
-#define MISO PA6
-#define MOSI PA7
-#define SS PA4
-#define RST PA8 // ==> New PCB
-#define DIO0 PA15 // ==> New PCB
-const int csPin = PA4;    // LoRa radio chip select
-const int resetPin = PA8; // LoRa radio reset
-const int irqPin = PA15;   // Change for your board; must be a hardware interrupt pin of the STM32 Bluepill ==> New PCB
+#define LoRa_SCK PA5
+#define LoRa_MISO PA6
+#define LoRa_MOSI PA7
+#define LoRa_NSS PA4 // LoRa radio chip select
+// #define LoRa_RST = PA8; // LoRa radio reset ==> New PCB
+// #define LoRa_DIO0 = PA15; // Change for your board; must be a hardware interrupt pin of the STM32 Bluepill ==> New PCB
+// #define LoRa_RST PA0 // LoRa radio reset ==> Old PCB in this works
+// #define LoRa_DIO0 PA1 // Change for your board; must be a hardware interrupt pin of the STM32 Bluepill ==> Old PCB in this works
+#define LoRa_RST PB1  // it worked on breadboard
+#define LoRa_DIO0 PB0 // it worked on breadboard
+
+
 
 // Define LoRa Communication Band:
 #define BAND 915E6 /*  915E6 for Brazil (902-928 MHz) \
@@ -248,7 +251,7 @@ void goToSleep();
 // TODO: Need to be better documented and clarified!!!!
 void setup()
 {
-  distance_reading_done = true; // emulates us sensor readng
+  // distance_reading_done = true; // emulates us sensor readng
   sketchSetup();         // Setup of the Serial log and initial serial setup
   pinMode(PC13, OUTPUT); // Initialize digital pin PC13 (LED) as an output.
 
@@ -302,12 +305,13 @@ void setup()
 #endif
 
   // Enable the LoRa power supply
-  pinMode(PB13, OUTPUT);
-  digitalWrite(PB13, HIGH);
+  // TODO: Disabled to test instability
+  // pinMode(PB13, OUTPUT);
+  // digitalWrite(PB13, HIGH);
 
-  delay(50); // Enable MP2307 in the MINI360 power regulator, it is needed 16ms to activate Vout
+  // delay(50); // Enable MP2307 in the MINI360 power regulator, it is needed 16ms to activate Vout
 
-  Serial.println("Tentando inicializar o RTC com LSE...");
+  Serial.println("Starting RTC with LSE Clock...");
   setupRTC();
   delay(50);
   // Serial.println("setTime()");
@@ -325,7 +329,7 @@ void setup()
   goToSleep();
 
   // Serial.println("ultrasonic_setup()");
-  // ultrasonic_setup();
+  ultrasonic_setup();
   Serial.println("start_LoRa()");
   start_LoRa();
 }
@@ -334,7 +338,7 @@ void setup()
 void loop()
 {
   logState(20); // entrou no loop
-  // readUltrasonic();
+  readUltrasonic();
   sendReadings();
 
 #ifdef enableWatchDog
@@ -345,7 +349,6 @@ void loop()
   // {                     // Does it say here how long it stays active?? 10s
   // goToSleep_flag = 2; // Flag that indicates that have to hibernate FOR 1MIN
 
-  // TODO: teste comentando 28.08 .Se comentar essa parte a lógica deixa de entrar em hibernação ==>
   enableBackupDomain();
   setBackupRegister(2, 10);
   disableBackupDomain();
@@ -681,13 +684,12 @@ void onReceive(int packetSize)
 
 void LoRa_sendMessage(String message)
 {
-  // if (!distance_reading_done)
-  // {
   LoRa_txMode();        // set tx mode
   LoRa.beginPacket();   // start packet
   LoRa.print(message);  // add payload
-  LoRa.endPacket(true); // finish packet and send it
-  // }
+  LoRa.endPacket(true); // garante envio completo antes de continuar
+  Serial.println("Transmissão concluída. Indo dormir...");
+  goToSleep_flag = 2;    // força entrada no sono
 }
 
 void onTxDone()
@@ -753,9 +755,9 @@ void start_LoRa()
   LoRa.setTxPower(20); // Change LoRa transmission power to 20dBm
   Serial.println("Potência de Transmissão LoRa: 20dBm");
 
-  LoRa.setPins(csPin, resetPin, irqPin); // SPI LoRa pins
+  LoRa.setPins(LoRa_NSS, LoRa_RST, LoRa_DIO0); // SPI LoRa pins
   // LoRa.setPins(Lora_SS, Lora_RST, Lora_DIO0); //pinos definidos diretamente na lib
-  // SPI.begin(SCK, MISO, MOSI, SS); //pinos definidos diretamente na lib
+  // SPI.begin(LoRa_SCK, LoRa_MISO, LoRa_MOSI, LoRa_NSS); //pinos definidos diretamente na lib
 
   while (!LoRa.begin(BAND) && lora_startup_counter < 10)
   {
@@ -853,7 +855,6 @@ void sendReadings()
 #endif
 
     readingID++;
-    readingDistance++;
   }
   // }
 }
