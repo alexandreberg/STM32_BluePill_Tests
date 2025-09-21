@@ -5,16 +5,6 @@
  *
  * Code available on: https://github.com/alexandreberg/SAPM_Sensor_BluePill
  *
- * RFM95 LoRa Connection - STM32 Bluepill
- *    VCC - 3.3V
- *    GND - GND
- *    LoRa_SCK - LoRa_SCK (PA5)
- *    LoRa_MISO - LoRa_MISO (PA6)
- *    LoRa_MOSI - LoRa_MOSI (PA7)
- *    LoRa_NSS - (PA4)
- *    RESET - (PA0)
- *    LoRa_DIO0 - (PA1)
- *
  * BackupRegisters:
  * See https://community.st.com/t5/stm32-mcus/how-to-use-the-stm32-s-backup-registers/ta-p/49892
  *
@@ -45,7 +35,7 @@ BR4  → contador de boots
 BR5 e BR6 → timestamp (parte baixa/alta)
 BR7 - FREE
 BR8 - FREE
-BR9 - FREE
+BR9 - Nuber of Rain Gauge pulses
 
 Flag to enter in deep sleep mode:
 goToSleep_flag = 0; i boot flag
@@ -81,8 +71,12 @@ The board will restart when exit shutdown mode.
 Hardware state
 shutdown mode: high wake-up latency (possible hundereds of ms or second timeframe), voltage supplies are cut except always-on domain, memory content are lost and system basically reboots.
 
-
-
+21/09/25 - Adding pluviometer with LowPower.deepSleep instead of LowPower.shutdown
+Tested on breadboard with lora pins:
+#define LoRa_RST PB1  // it worked on breadboard
+#define LoRa_DIO0 PB0 // it worked on breadboard
+and pluviometer on PB8
+Initial tests ok, passing to PCB...
 */
 
 /*********************************************** Sensor Description ***********************************************/
@@ -92,9 +86,10 @@ shutdown mode: high wake-up latency (possible hundereds of ms or second timefram
 /*********************************************** Macro Definitions ***********************************************/
 // Enable (uncommenting) or disable (commenting out) services and periferals
 #define enableSerialLog  // enable Serial debug on console
-#define enableWatchDog   // enable watchdog for deepsleep
-#define enableUltrasonic // enable Ultrasonic Sensor
+// #define enableWatchDog   // enable watchdog for deepsleep
+// #define enableUltrasonic // enable Ultrasonic Sensor
 #define enableRTCstm32   // using STM32 internal RTC Clock
+#define enableRainGauge  // Enable Pluviometer
 // #define enableTinyRTC         // TODO: not used because de SPI bus freezes and loose the connection!
 #define enableLoRa // enable LoRa communication
 #define enableDebug // Enable verbosity in debugging log
@@ -127,11 +122,28 @@ shutdown mode: high wake-up latency (possible hundereds of ms or second timefram
 #endif
 
 /*********************************************** Global Variables ***********************************************/
-String version = "System Version: SAPM_Sensor_BluePill_2025091402 New PCB Pins"; // ==> CHANGE HERE! <==
+String version = "System Version: SAPM_Sensor_BluePill_2025092101_Protoboard_pluviometer"; // ==> CHANGE HERE! <==
 
-#ifdef enableWatchDog
-const int ledPin = PC13; // TODO: Just to have visual information that it is working.
+
+#ifdef enableRainGauge
+// ==== Pluviômetro ====
+#define BR9 9 // Bluepill tem até Backup Register 9
+#define DEBOUNCE_MS 100
+#define RAIN_PER_PULSE 0.25f // 0.25 mm por pulso
+bool pulseFlag = 0;          // ISR Flag
+volatile uint32_t rainPulses = 0;
+// volatile int repetitions = 1;
+volatile uint32_t accumulatedRainPulses = 0;
+volatile uint32_t lastPulseTime = 0;
+// Pin used to trigger a wakeup
+#ifndef RAIN_GAUGE
+#define RAIN_GAUGE pinNametoDigitalPin(SYS_WKUP1)
 #endif
+#define RAIN_GAUGE PB8 // rain gauge pin
+
+#endif // enableRainGauge
+
+#define  led_pin PC13 // TODO: Just to have visual information that it is working.
 
 #ifdef enableTinyRTC // Not used
 // Store date and time
@@ -150,7 +162,6 @@ char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursd
 #endif // enableTinyRTC
 
 #ifdef enableRTCstm32 // Working
-boolean onReceive_flag = 0;
 /* Get the rtc object */
 STM32RTC &rtc = STM32RTC::getInstance();
 byte startUpMinute = 0;
@@ -174,7 +185,6 @@ const unsigned int echoPin = PA2;
 unsigned long pulseLength = 0;
 unsigned long readingDistance = 0; // Measured distance in centimeters
 // unsigned long maxReadingNumber = 0;    // Number of ultrasonic readings to do the calculation of mean and average
-bool distance_reading_done = false;
 #endif // enableUltrasonic
 
 int goToSleep_flag = 0; // Flag to enter in deep sleep mode
@@ -192,8 +202,6 @@ int goToSleep_flag = 0; // Flag to enter in deep sleep mode
 #define LoRa_RST PB1  // it worked on breadboard
 #define LoRa_DIO0 PB0 // it worked on breadboard
 
-
-
 // Define LoRa Communication Band:
 #define BAND 915E6 /*  915E6 for Brazil (902-928 MHz) \
                        433E6 for Asia                 \
@@ -204,13 +212,14 @@ int lora_startup_counter = 0; // Counter to check if LoRa chip started communica
 long readingID = 0;           // Sending packet N°
 
 String LoRaMessage = ""; // String to store the LoRa Message that should be sent
+
+boolean onReceive_flag = 0;
+bool distance_reading_done = false;
+
 #endif                   // enableLoRa
 
 /*********************************************** Function Prototypes ***********************************************/
 void sketchSetup();
-void readUltrasonic();
-float calculateMedian(int *array, int arraySize);
-int compareReadings(const void *a, const void *b);
 void logState(uint16_t code);
 
 #ifdef enableTinyRTC
@@ -245,22 +254,28 @@ void start_LoRa();
 void sendReadings();
 #endif // enableLoRa
 
+#ifdef enableRainGauge
+void rainISR();
+void getRainPulses();
+#endif //enableRainGauge
+
 void goToSleep();
 
 /*********************************************** End Function Prototypes *******************************************/
 // TODO: Need to be better documented and clarified!!!!
 void setup()
 {
-  // distance_reading_done = true; // emulates us sensor readng
+  // distance_reading_done = true; // emulates us sensor reading to test without US sensor
   sketchSetup();         // Setup of the Serial log and initial serial setup
-  pinMode(PC13, OUTPUT); // Initialize digital pin PC13 (LED) as an output.
+  pinMode(led_pin, OUTPUT); 
+  pinMode(RAIN_GAUGE, INPUT);                 
 
   // Blink pattern at startup
   for (int i = 0; i < 5; i++)
   {
-    digitalWrite(PC13, HIGH);
+    digitalWrite(led_pin, HIGH);
     delay(150);
-    digitalWrite(PC13, LOW);
+    digitalWrite(led_pin, LOW);
     delay(150);
   }
 
@@ -289,17 +304,6 @@ void setup()
     goToSleep();
   }
 
-  // if (getBackupRegister(3) != 0)
-  // { // indicates that  have to go into deepsleep
-  //   Serial.println("Sistema reinicializado pelo WatchDog preparando para hibernação...=== BR3 = " + String(getBackupRegister(3)));
-  //   setupRTC();
-  //   enableBackupDomain();
-  //   setBackupRegister(3, 0);
-  //   delay(100);
-  //   LowPower.begin();
-  //   goToSleep_flag = 1; // hibernation flag normal deepsleep ?????
-  //   goToSleep();
-  // }
   disableBackupDomain();
   IWatchdog.begin(10000000); // Init the watchdog timer with 10 seconds timeout
 #endif
@@ -312,8 +316,10 @@ void setup()
   // delay(50); // Enable MP2307 in the MINI360 power regulator, it is needed 16ms to activate Vout
 
   Serial.println("Starting RTC with LSE Clock...");
+  #ifdef enableWatchDog
   setupRTC();
   delay(50);
+  #endif
   // Serial.println("setTime()");
   //   setTime();
   //   startUpMinute = rtc.getMinutes();
@@ -324,12 +330,22 @@ void setup()
   //   while (1)
   //     ;
   // }
-  Serial.println("LowPower.begin()");
+  Serial.println("DEBUG: Starting LowPower.begin()");
+// Configure low power
   LowPower.begin();
-  goToSleep();
+  // Attach a wakeup interrupt on pin, calling rainISR when the device is woken up
+  // Last parameter (LowPowerMode) should match with the low power state used: in this example LowPower.sleep()
+  LowPower.attachInterruptWakeup(RAIN_GAUGE, rainISR, RISING, DEEP_SLEEP_MODE);
+  /*void attachInterruptWakeup(uint32_t pin, voidFuncPtrVoid callback, uint32_t mode, LP_Mode LowPowerMode): Enable GPIO pin in interrupt mode. If the pin is a wakeup pin, it is configured as wakeup source (see board documentation). param pin: pin number
+param callback: pointer to callback
+param mode: interrupt mode (HIGH, LOW, RISING, FALLING or CHANGE) param LowPowerMode: Low power mode which will be used (IDLE_MODE, SLEEP_MODE, DEEP_SLEEP_MODE or SHUTDOWN_MODE). In case of SHUTDOWN_MODE only, Wakeup pin capability is activated. see: 
+https://github.com/stm32duino/STM32LowPower/blob/main/examples/ExternalWakeup/ExternalWakeup.ino
+*/
 
   // Serial.println("ultrasonic_setup()");
+  #ifdef enableUltrasonic
   ultrasonic_setup();
+  #endif
   Serial.println("start_LoRa()");
   start_LoRa();
 }
@@ -338,26 +354,29 @@ void setup()
 void loop()
 {
   logState(20); // entrou no loop
+  getRainPulses(); // Checks if received a pulse
+
+  #ifdef enableUltrasonic
   readUltrasonic();
+  #endif
+
   sendReadings();
 
 #ifdef enableWatchDog
   IWatchdog.reload();
 #endif
 
-  // if (runClockEvery(1000 * 10))
-  // {                     // Does it say here how long it stays active?? 10s
-  // goToSleep_flag = 2; // Flag that indicates that have to hibernate FOR 1MIN
-
   enableBackupDomain();
   setBackupRegister(2, 10);
   disableBackupDomain();
   delay(5000); // Espera 5 segundos entre transmissões
 
-  // }
-  goToSleep();
-  // checkonReceive(); //TODO desativo pq não tem como diferenciar qdo volta do boot pelo watchdog precisaria ter um flag gravado em memo rtc
-  //  delay(60000); //faz uma leitura por minuto
+   // Triggers an infinite sleep (the device will be woken up only by the registered wakeup sources)
+  // The power consumption of the chip will drop consistently
+  Serial.println("Going to LowPower.deepSleep by 10sec");
+  Serial.flush();
+  LowPower.deepSleep(10000); // Deep sleep 10s
+  // goToSleep();
 }
 
 /*********************************************** End loop () ***********************************************/
@@ -607,7 +626,14 @@ void goToSleep()
 #endif
     Serial.println("Hibernando por 1 minuto... goToSleep_flag == " + String(goToSleep_flag));
     delay(10);
-    LowPower.shutdown(1000 * 60); // hiberna por 1 min
+    // LowPower.shutdown(1000 * 60); // hiberna por 1 min
+    LowPower.deepSleep(1000 * 60); // for Rain Gauge
+    // Ao acordar, reestabiliza a serial
+    delay(100);
+    Serial.flush();
+    Serial.end();
+    delay(50);
+    Serial.begin(115200);
   }
   // Entra em Deep Sleep e acorda em horas cheias hh:00 ou hh:30
   if (goToSleep_flag == 1)
@@ -619,7 +645,14 @@ void goToSleep()
 #endif
     Serial.println("Hibernando por 1 minuto... goToSleep_flag == " + String(goToSleep_flag));
     delay(10);
-    LowPower.shutdown(1000 * 60); // hiberna por 1 min
+    // LowPower.shutdown(1000 * 60); // hiberna por 1 min
+    LowPower.deepSleep(1000 * 60); // for Rain Gauge
+    // Ao acordar, reestabiliza a serial
+    delay(100);
+    Serial.flush();
+    Serial.end();
+    delay(50);
+    Serial.begin(115200);
   }
 }
 
@@ -779,7 +812,7 @@ void start_LoRa()
 
 // Setup receiver para receber o update da hora:
 #ifdef enableSerialLog
-  Serial.println("LoRa Receiver Callback with LoRa Reset in PA0");
+  Serial.println("LoRa Receiver Callback with LoRa Reset in " + String(LoRa_RST));
   Serial.println("LoRa Simple Node");
   Serial.println("Only receive messages from gateways");
   Serial.println("Tx: invertIQ disable");
@@ -829,20 +862,34 @@ void start_LoRa()
 void sendReadings()
 {
 
-  Serial.println("sendReadings()");
+  Serial.println("DEBUG: inside sendReadings()");
   logState(40); // está no sendReadings
                   // if (runEvery(5000))
                   // { // repeat every 5 sec
   // TODO se recebe confirmação de recebimento do gateway, não pode enviar mais para economizar bateria ver email: Checagem de Retorno de mensagem LoRa
-  if (distance_reading_done) // Just sends after the US have done all the measurementes
+  if (distance_reading_done || (accumulatedRainPulses > 0) ) // Just sends after the US have done all the measurementes or The pluviometer has measurements
   {
 
+    // #ifdef enableRainGauge
+    // float rain = getRainVolume();
+    
+    // Serial.print("RainGauge pulses = ");
+    // Serial.print(getRainPulses());
+    // Serial.print(" | Accumulated Precipitation = ");
+    // Serial.print(rain, 2);
+    // Serial.println(" mm");
+    // #endif
+
     // TODO: Do I know it the receiver received the LoRa message? how?
-    LoRaMessage = String(sensor_id) + "/" + String(readingDistance) + "&" + String(readingDistance);
+    // LoRaMessage = String(sensor_id) + "/" + String(readingDistance) + "&" + String(readingDistance);
+    LoRaMessage = String(sensor_id) + "/" + String(accumulatedRainPulses) + "&" + String(accumulatedRainPulses);
+    
+    // LoRaMessage = String(sensor_id) + "/" + String(readingDistance) + "&" + String(rain, 2);
 
     // Send LoRa packet to receiver
     LoRa_sendMessage(LoRaMessage); // send a LoRaMessage
     distance_reading_done = false;
+    accumulatedRainPulses = 0; // TODO: Resets after sending
 
 #ifdef enableSerialLog
     Serial.print("Sending packet N°: ");
@@ -860,6 +907,29 @@ void sendReadings()
 }
 
 #endif // enableLoRa
+
+#ifdef enableRainGauge
+void rainISR() //
+{
+  // This function will be called once on device wakeup
+  // You can do some little operations here (like changing variables which will be used in the loop)
+  // Remember to avoid calling delay() and long running functions since this functions executes in interrupt context
+  pulseFlag = 1; // Received a pulse
+  ++rainPulses;
+}
+
+void getRainPulses()
+{
+  if (pulseFlag){
+    Serial.println("Pulse: " + String(rainPulses)); 
+    accumulatedRainPulses = rainPulses + accumulatedRainPulses;
+    Serial.println("accumulatedRainPulses: " + String(accumulatedRainPulses)); 
+    Serial.println("Accumulated Precipitation: " + String(RAIN_PER_PULSE*accumulatedRainPulses) + "mm");
+    pulseFlag = 0; 
+    rainPulses = 0;
+  }
+}
+#endif //enableRainGauge
 
 /*********************************************** Helpers ***********************************************/
 void logState(uint16_t code)
