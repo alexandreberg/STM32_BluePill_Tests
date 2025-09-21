@@ -77,6 +77,12 @@ Tested on breadboard with lora pins:
 #define LoRa_DIO0 PB0 // it worked on breadboard
 and pluviometer on PB8
 Initial tests ok, passing to PCB...
+
+TODO:
+- software debouncing
+- hardware debouncing
+- activate BME280
+- Battery Voltage measure 
 */
 
 /*********************************************** Sensor Description ***********************************************/
